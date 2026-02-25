@@ -13,6 +13,7 @@ People Counter System v3.3 — MVP
 """
 
 import os
+import platform
 import signal
 import sys
 import time
@@ -21,6 +22,8 @@ from queue import Queue, Empty
 from typing import Optional
 
 import cv2
+
+_IS_MACOS = platform.system() == "Darwin"
 
 from roi_manager import ROIManager
 from database import Database
@@ -132,25 +135,33 @@ def open_camera(idx: int) -> cv2.VideoCapture:
 #  Превью
 # ═══════════════════════════════════════════════════════
 
+# Счётчик отложенных flush-итераций после destroyWindow на macOS.
+# Главный цикл вызывает waitKey(1) пока счётчик > 0 — без заморозки UI.
+_cv2_flush_remaining: int = 0
+
+
 def _open_preview():
-    """Показать превью-окно (пустое — кадр придёт в следующей итерации)."""
-    # Создаём окно заранее, чтобы оно появилось сразу
-    cv2.namedWindow(PREVIEW_WIN, cv2.WINDOW_NORMAL)
+    """Показать превью-окно — окно создаётся первым cv2.imshow, не namedWindow."""
     print("  [t] Превью открыто")
 
 
 def _close_preview():
     """
-    Надёжное закрытие окна превью на macOS / Windows / Linux.
-    cv2.destroyWindow + несколько итераций waitKey для обработки событий.
+    Надёжное закрытие окна превью без заморозки.
+    Синхронный flush (waitKey в цикле) на macOS занимает ~800мс за вызов —
+    поэтому flush делегируется главному циклу через _cv2_flush_remaining.
     """
-    try:
-        cv2.destroyWindow(PREVIEW_WIN)
-    except Exception:
-        pass
-    # Без этих вызовов на macOS окно зависает («мертвое» окно без содержимого)
-    for _ in range(10):
-        cv2.waitKey(1)
+    global _cv2_flush_remaining
+    if _IS_MACOS:
+        try:
+            cv2.destroyWindow(PREVIEW_WIN)
+        except Exception:
+            pass
+        _cv2_flush_remaining = 5   # обработаем в главном цикле — без блокировки
+    else:
+        cv2.destroyAllWindows()
+        for _ in range(5):
+            cv2.waitKey(1)
     print("  [t] Превью закрыто")
 
 
@@ -293,14 +304,38 @@ def main():
         # ── Считать клавишу (терминал) ──
         key = kbd.get()
 
-        # Если превью открыто — также слушаем клавиши из cv2-окна
-        if preview_on and key is None:
-            cv_key = cv2.waitKey(30) & 0xFF
-            if cv_key not in (255, 0xFF, 0):
-                key = chr(cv_key).lower() if cv_key < 128 else None
+        # ── Обновление превью + cv2 события ──
+        if preview_on:
+            frame = engine.get_latest_frame()
+            if frame is not None:
+                cv2.imshow(PREVIEW_WIN, frame)   # imshow ПЕРВЫМ
+
+            cv_key = cv2.waitKey(30) & 0xFF      # затем waitKey (pump events)
+            if key is None and cv_key not in (255, 0xFF, 0) and cv_key < 128:
+                key = chr(cv_key).lower()
+
+            # Пользователь закрыл окно крестиком?
+            if not _preview_is_open():
+                global _cv2_flush_remaining
+                if _IS_MACOS:
+                    try:
+                        cv2.destroyWindow(PREVIEW_WIN)
+                    except Exception:
+                        pass
+                    _cv2_flush_remaining = 5   # отложенный flush
+                else:
+                    cv2.destroyAllWindows()
+                    for _ in range(5):
+                        cv2.waitKey(1)
+                preview_on = False
+                print("  [Превью] Закрыто пользователем")
         else:
-            # Без превью — просто небольшая пауза
-            time.sleep(0.03)
+            # Без превью — отложенный flush (macOS) или обычная пауза
+            if _cv2_flush_remaining > 0:
+                cv2.waitKey(1)
+                _cv2_flush_remaining -= 1
+            else:
+                time.sleep(0.03)
 
         # ── Обработка клавиш ──
         if key in ('q', '\x1b'):        # q или Esc
@@ -313,21 +348,6 @@ def main():
             else:
                 _open_preview()
                 preview_on = True
-
-        # ── Обновление превью ──
-        if preview_on:
-            frame = engine.get_latest_frame()
-            if frame is not None:
-                cv2.imshow(PREVIEW_WIN, frame)
-
-            # Пользователь закрыл окно крестиком?
-            if not _preview_is_open():
-                # destroyWindow уже сработал через крестик,
-                # просто сбрасываем флаг и чистим очередь событий
-                for _ in range(5):
-                    cv2.waitKey(1)
-                preview_on = False
-                print("  [Превью] Закрыто пользователем")
 
         # ── ESP: отслеживание смены занятости ──
         if esp:
