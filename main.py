@@ -141,8 +141,8 @@ _cv2_flush_remaining: int = 0
 
 
 def _open_preview():
-    """Показать превью-окно — окно создаётся первым cv2.imshow, не namedWindow."""
-    print("  [t] Превью открыто")
+    """Окно создаётся первым cv2.imshow — без namedWindow, без лишних окон."""
+    print("  [t] Превью открыто  (закрыть: t)")
 
 
 def _close_preview():
@@ -163,14 +163,6 @@ def _close_preview():
         for _ in range(5):
             cv2.waitKey(1)
     print("  [t] Превью закрыто")
-
-
-def _preview_is_open() -> bool:
-    """Возвращает True, если окно ещё видимо (пользователь не закрыл крестиком)."""
-    try:
-        return cv2.getWindowProperty(PREVIEW_WIN, cv2.WND_PROP_VISIBLE) >= 1
-    except Exception:
-        return False
 
 
 # ═══════════════════════════════════════════════════════
@@ -284,6 +276,7 @@ def main():
     _print_help()
 
     # ── Состояние ──
+    global _cv2_flush_remaining
     preview_on    = False
     running       = True
     status_timer  = time.time()
@@ -313,22 +306,6 @@ def main():
             cv_key = cv2.waitKey(30) & 0xFF      # затем waitKey (pump events)
             if key is None and cv_key not in (255, 0xFF, 0) and cv_key < 128:
                 key = chr(cv_key).lower()
-
-            # Пользователь закрыл окно крестиком?
-            if not _preview_is_open():
-                global _cv2_flush_remaining
-                if _IS_MACOS:
-                    try:
-                        cv2.destroyWindow(PREVIEW_WIN)
-                    except Exception:
-                        pass
-                    _cv2_flush_remaining = 5   # отложенный flush
-                else:
-                    cv2.destroyAllWindows()
-                    for _ in range(5):
-                        cv2.waitKey(1)
-                preview_on = False
-                print("  [Превью] Закрыто пользователем")
         else:
             # Без превью — отложенный flush (macOS) или обычная пауза
             if _cv2_flush_remaining > 0:
