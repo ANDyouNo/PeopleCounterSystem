@@ -127,8 +127,11 @@ if exist "node_modules\@rollup" (
     )
 )
 
-npm install --prefer-offline 2>nul
-if errorlevel 1 npm install
+npm install --prefer-offline
+if errorlevel 1 (
+    echo [RETRY] Retrying npm install without cache...
+    npm install
+)
 if errorlevel 1 (
     echo [ERROR] npm install failed
     cd /d "%PROJ_DIR%"
@@ -162,20 +165,25 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 goto end
 
 :launch_prod
-if not exist "frontend\dist" (
-    echo [..] Building frontend...
-    cd /d "%PROJ_DIR%frontend"
-    npm run build
-    if errorlevel 1 (
-        echo [ERROR] Frontend build failed
-        cd /d "%PROJ_DIR%"
-        pause & exit /b 1
-    )
+if not exist "frontend\dist" goto build_frontend
+echo [OK] Frontend: existing build found at frontend\dist\
+goto start_server
+
+:build_frontend
+echo [..] Building frontend (tsc + vite)...
+echo      This may take 30-60 seconds on first run.
+cd /d "%PROJ_DIR%frontend"
+npm run build
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Frontend build failed - see errors above
     cd /d "%PROJ_DIR%"
-    echo [OK] Frontend built
-) else (
-    echo [OK] Frontend: existing build found at frontend\dist\
+    pause & exit /b 1
 )
+cd /d "%PROJ_DIR%"
+echo [OK] Frontend built successfully
+
+:start_server
 
 echo.
 echo   URL: http://localhost:8000
