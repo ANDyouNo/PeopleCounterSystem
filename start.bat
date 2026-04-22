@@ -1,177 +1,191 @@
 @echo off
-rem ──────────────────────────────────────────────────────────
-rem  People Counter System — скрипт запуска (Windows)
-rem  Использование:  start.bat [dev|prod]
-rem ──────────────────────────────────────────────────────────
+rem =========================================================
+rem  People Counter System - startup script (Windows)
+rem  Usage:  start.bat [dev|prod]
+rem =========================================================
 setlocal EnableDelayedExpansion
 
 set MODE=%1
 if "%MODE%"=="" set MODE=prod
 
 cd /d "%~dp0"
-rem Используем set "VAR=..." чтобы корректно обрабатывать пути с пробелами
 set "PROJ_DIR=%~dp0"
 
 echo.
-echo ╔══════════════════════════════════════════╗
-echo ║    People Counter System  v4.0           ║
-echo ╚══════════════════════════════════════════╝
+echo =========================================
+echo   People Counter System  v4.0
+echo =========================================
 echo.
 
-rem ════════════════════════════════════════════════════════
+rem =========================================================
 rem  Python
-rem ════════════════════════════════════════════════════════
+rem =========================================================
 where python >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Python не найден. Установите Python 3.10+
+if errorlevel 1 (
+    echo [ERROR] Python not found. Please install Python 3.10+
     pause & exit /b 1
 )
 for /f "tokens=*" %%v in ('python --version') do echo [OK] %%v
 
-rem ── Виртуальное окружение ─────────────────────────────
+rem -- Virtual environment --
 if not exist ".venv" (
-    echo [!] Создаём виртуальное окружение .venv...
+    echo [..] Creating virtual environment .venv...
     python -m venv .venv
-)
-call ".venv\Scripts\activate.bat"
-echo [OK] venv активирован
-
-rem ── Python-зависимости ────────────────────────────────
-python -c "import fastapi" >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [!] Устанавливаем Python-зависимости...
-    pip install -r requirements.txt -q
-    if !ERRORLEVEL! NEQ 0 (
-        echo [ERROR] pip install завершился с ошибкой
+    if errorlevel 1 (
+        echo [ERROR] Failed to create virtual environment
         pause & exit /b 1
     )
-    echo [OK] Python-зависимости установлены
+)
+call .venv\Scripts\activate.bat
+echo [OK] venv activated
+
+rem -- Python dependencies --
+python -c "import fastapi" >nul 2>&1
+if errorlevel 1 (
+    echo [..] Installing Python dependencies...
+    pip install -r requirements.txt -q
+    if errorlevel 1 (
+        echo [ERROR] pip install failed
+        pause & exit /b 1
+    )
+    echo [OK] Python dependencies installed
 ) else (
-    echo [OK] Python-зависимости OK
+    echo [OK] Python dependencies OK
 )
 
-rem ── Директория данных ─────────────────────────────────
+rem -- Data directory --
 if not exist "data" mkdir data
 echo [OK] data/ OK
 
-rem ════════════════════════════════════════════════════════
-rem  Модель YOLOv8
-rem ════════════════════════════════════════════════════════
+rem =========================================================
+rem  YOLOv8 model check
+rem =========================================================
 set HAS_PT=0
 set HAS_ONNX=0
 if exist "yolov8n.pt"   set HAS_PT=1
 if exist "yolov8n.onnx" set HAS_ONNX=1
 
-if !HAS_PT!==0 if !HAS_ONNX!==0 (
-    echo [!] Модель YOLOv8n не найдена. Скачиваем (~6 MB)...
-    python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-    if !ERRORLEVEL! NEQ 0 (
-        echo [ERROR] Не удалось скачать модель. Проверьте соединение с интернетом.
-        pause & exit /b 1
-    )
-    set HAS_PT=1
-    echo [OK] Модель скачана: yolov8n.pt
-)
+if %HAS_PT%==0 if %HAS_ONNX%==0 goto download_model
+goto model_ok
 
-if !HAS_ONNX!==1 (
-    echo [OK] Модель: yolov8n.onnx  (ONNX — оптимально для Intel CPU^)
-) else if !HAS_PT!==1 (
-    echo [OK] Модель: yolov8n.pt
-    echo.
-    echo   Для ускорения на Intel CPU рекомендуется экспорт в ONNX.
-    set /p "EXPORT_CHOICE=  Экспортировать в ONNX прямо сейчас? [y/N]: "
-    if /i "!EXPORT_CHOICE!"=="y" (
-        echo [!] Экспорт модели в ONNX...
-        python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx')"
-        if !ERRORLEVEL! EQU 0 (
-            echo [OK] yolov8n.onnx создан. Установите inference_backend=onnx в настройках.
-            set HAS_ONNX=1
-        ) else (
-            echo [WARN] Экспорт не удался. Продолжаем с .pt
-        )
-    )
+:download_model
+echo [..] YOLOv8n model not found. Downloading (~6 MB)...
+python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+if errorlevel 1 (
+    echo [ERROR] Failed to download model. Check internet connection.
+    pause & exit /b 1
 )
+set HAS_PT=1
+echo [OK] Model downloaded: yolov8n.pt
+
+:model_ok
+if %HAS_ONNX%==1 (
+    echo [OK] Model: yolov8n.onnx  (ONNX - recommended for Intel CPU)
+    goto model_done
+)
+echo [OK] Model: yolov8n.pt
+
+echo.
+echo   For better performance on Intel CPU, export the model to ONNX.
+set /p "EXPORT_CHOICE=  Export yolov8n.pt to ONNX now? [y/N]: "
+if /i "%EXPORT_CHOICE%"=="y" goto do_export
+goto model_done
+
+:do_export
+echo [..] Exporting model to ONNX...
+python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx')"
+if errorlevel 1 (
+    echo [WARN] Export failed. Continuing with .pt
+    goto model_done
+)
+echo [OK] yolov8n.onnx created.
+echo      Set inference_backend=onnx in the Settings page.
+
+:model_done
 echo.
 
-rem ════════════════════════════════════════════════════════
+rem =========================================================
 rem  Node.js + npm
-rem ════════════════════════════════════════════════════════
+rem =========================================================
 where node >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Node.js не найден. Установите Node.js 18+ ^(https://nodejs.org^)
+if errorlevel 1 (
+    echo [ERROR] Node.js not found. Install Node.js 18+ from https://nodejs.org
     pause & exit /b 1
 )
 for /f "tokens=*" %%v in ('node --version') do echo [OK] Node.js %%v
 
-echo [!] npm install (frontend)...
+echo [..] npm install (frontend)...
 cd /d "%PROJ_DIR%frontend"
 
-rem Удаляем node_modules если созданы под другую платформу (darwin/linux)
+rem Remove node_modules if built for a different platform (darwin/linux -> windows)
 if exist "node_modules\@rollup" (
     dir /b "node_modules\@rollup" 2>nul | findstr /i "darwin linux" >nul 2>&1
-    if !ERRORLEVEL! EQU 0 (
-        echo [!] Обнаружены модули от другой платформы — пересоздаём...
+    if not errorlevel 1 (
+        echo [..] Found modules from another platform - rebuilding...
         rmdir /s /q node_modules
         if exist "package-lock.json" del /f /q package-lock.json
     )
 )
 
 npm install --prefer-offline 2>nul
-if %ERRORLEVEL% NEQ 0 npm install
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] npm install завершился с ошибкой
+if errorlevel 1 npm install
+if errorlevel 1 (
+    echo [ERROR] npm install failed
+    cd /d "%PROJ_DIR%"
     pause & exit /b 1
 )
-echo [OK] npm-зависимости OK
+echo [OK] npm dependencies OK
 cd /d "%PROJ_DIR%"
 
-rem ════════════════════════════════════════════════════════
-rem  PYTHONPATH — устанавливаем ДО блока if/else
-rem  (set "VAR=..." — кавычки снаружи, чтобы пробелы в пути работали)
-rem ════════════════════════════════════════════════════════
+rem =========================================================
+rem  Set PYTHONPATH before if/else block
+rem  (quoted set handles spaces in path correctly)
+rem =========================================================
 set "PYTHONPATH=%PROJ_DIR%"
 
-rem ════════════════════════════════════════════════════════
-rem  Режим запуска
-rem ════════════════════════════════════════════════════════
-if "%MODE%"=="dev" (
-    echo.
-    echo   Backend : http://localhost:8000
-    echo   Frontend: http://localhost:5173  ^<-- открыть в браузере
-    echo   API docs: http://localhost:8000/docs
-    echo.
-    echo   Закройте это окно для остановки
-    echo.
+rem =========================================================
+rem  Launch
+rem =========================================================
+if "%MODE%"=="dev" goto launch_dev
+goto launch_prod
 
-    start "People Counter - Frontend" cmd /k "cd /d ""%PROJ_DIR%frontend"" && npm run dev"
-    python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+:launch_dev
+echo.
+echo   Backend : http://localhost:8000
+echo   Frontend: http://localhost:5173  ^<-- open in browser
+echo   API docs: http://localhost:8000/docs
+echo.
+echo   Close this window to stop
+echo.
+start "People Counter - Frontend" cmd /k "cd /d ""%PROJ_DIR%frontend"" && npm run dev"
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+goto end
 
-) else (
-    if not exist "frontend\dist" (
-        echo [!] Собираем фронтенд...
-        cd /d "%PROJ_DIR%frontend"
-        npm run build
-        if !ERRORLEVEL! NEQ 0 (
-            echo [ERROR] Сборка фронтенда завершилась с ошибкой
-            cd /d "%PROJ_DIR%"
-            pause & exit /b 1
-        )
+:launch_prod
+if not exist "frontend\dist" (
+    echo [..] Building frontend...
+    cd /d "%PROJ_DIR%frontend"
+    npm run build
+    if errorlevel 1 (
+        echo [ERROR] Frontend build failed
         cd /d "%PROJ_DIR%"
-        echo [OK] Фронтенд собран
-    ) else (
-        echo [OK] Фронтенд: найдена сборка frontend\dist\
+        pause & exit /b 1
     )
-
-    echo.
-    echo   URL: http://localhost:8000
-    echo.
-    echo   Закройте это окно (или Ctrl+C) для остановки
-    echo.
-
-    python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-    echo.
-    echo [!] Сервер остановлен. Код выхода: %ERRORLEVEL%
+    cd /d "%PROJ_DIR%"
+    echo [OK] Frontend built
+) else (
+    echo [OK] Frontend: existing build found at frontend\dist\
 )
 
+echo.
+echo   URL: http://localhost:8000
+echo.
+echo   Close this window (or Ctrl+C) to stop
+echo.
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+echo.
+echo [!] Server stopped. Exit code: %ERRORLEVEL%
+
+:end
 echo.
 pause
