@@ -65,20 +65,41 @@ CLEAR_DB_ON_START          = False
 # False — не трогать
 
 # ════════════════════════════════════════════════
-#  ESP8266
+#  ВИТРИНЫ — Showcase ESP8266 + PCA9685
 # ════════════════════════════════════════════════
-ESP_ENABLED       = True   # True — включить управление ESP8266
+SHOWCASE_ESP_ENABLED     = True   # True — управлять витринами через ESP
 
-ESP_LISTEN_PORT   = 4211    # Порт на котором ESP рассылает broadcast-анонсы
-                            # (Python слушает этот порт, чтобы узнать IP ESP)
-ESP_COMMAND_PORT  = 4210    # Порт на котором ESP слушает команды "0"/"1"
+SHOWCASE_LISTEN_PORT     = 4211   # Python слушает анонсы от Showcase ESP
+SHOWCASE_COMMAND_PORT    = 4210   # Python → Showcase ESP (команды)
+SHOWCASE_ANNOUNCE_PREFIX = "PCOUNTER_SHOW"
 
-ESP_ANNOUNCE_PREFIX = "PCOUNTER_ESP"  # Префикс анонса (должен совпадать с прошивкой)
+SHOWCASE_COUNT           = 8     # Количество витрин
 
-ESP_DELAY_ON      = 0       # Задержка (сек) перед сигналом "включить"
-                            # 0 = сразу при появлении первого человека
-ESP_DELAY_OFF     = 0       # Задержка (сек) перед сигналом "выключить"
-                            # 0 = сразу когда зал опустел
+SHOWCASE_DELAY_ON        = 0     # Задержка (сек) перед командой ON (от камеры)
+SHOWCASE_DELAY_OFF       = 0     # Задержка (сек) перед командой OFF (от камеры)
+
+# ════════════════════════════════════════════════
+#  ОБЩИЙ СВЕТ — Light ESP8266 + реле
+# ════════════════════════════════════════════════
+LIGHT_ESP_ENABLED        = True   # True — управлять общим светом через ESP
+
+LIGHT_LISTEN_PORT        = 4213   # Python слушает анонсы от Light ESP
+LIGHT_COMMAND_PORT       = 4212   # Python → Light ESP (команды)
+LIGHT_ANNOUNCE_PREFIX    = "PCOUNTER_LIGHT"
+
+LIGHT_DELAY_AFTER_SHOWCASES = 5  # Задержка (сек): через сколько после витрин
+                                  # включается общий свет
+LIGHT_DELAY_OFF          = 0     # Задержка (сек) перед выключением общего света
+
+# ════════════════════════════════════════════════
+#  Обратная совместимость (устаревшее)
+# ════════════════════════════════════════════════
+ESP_ENABLED          = SHOWCASE_ESP_ENABLED   # ← устарело, используйте SHOWCASE_*
+ESP_LISTEN_PORT      = SHOWCASE_LISTEN_PORT
+ESP_COMMAND_PORT     = SHOWCASE_COMMAND_PORT
+ESP_ANNOUNCE_PREFIX  = SHOWCASE_ANNOUNCE_PREFIX
+ESP_DELAY_ON         = SHOWCASE_DELAY_ON
+ESP_DELAY_OFF        = SHOWCASE_DELAY_OFF
 
 # ════════════════════════════════════════════════
 #  ПРЕВЬЮ (окно с аннотированным видео)

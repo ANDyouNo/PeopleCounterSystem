@@ -1,15 +1,23 @@
 """
-People Counter System v3.3 — MVP
-Подсчёт людей через камеру. Управление с клавиатуры (терминал).
+People Counter System v4.0
+Подсчёт людей через камеру. Управление витринами и общим светом.
 
-Все настройки — в config.py (камера, зоны, модель, БД).
+Все настройки — в config.py.
 
 Запуск:  python main.py
 
-Клавиши (без Enter):
-  t   — открыть / закрыть окно превью
-  q   — завершить
-  Esc — завершить
+─── Клавиши (без Enter) ────────────────────────────────────────
+  t       — открыть / закрыть окно превью
+  q / Esc — завершить
+
+  Витрины (showcase):
+  a       — принудительно ВКЛ ВСЕ витрины
+  z       — снять принуждение со ВСЕХ витрин
+  m       — режим выбора витрины (затем нажмите 1–8 для переключения)
+
+  Общий свет:
+  l       — принудительно ВКЛ / ВЫКЛ общий свет (переключение)
+────────────────────────────────────────────────────────────────
 """
 
 import os
@@ -35,7 +43,10 @@ from config import (
     DEBOUNCE_FRAMES,
     EXCLUSION_ZONES_FILE, SETUP_ZONES_ON_START, CLEAR_ZONES_ON_START,
     DB_FILE, CLEAR_DB_ON_START,
-    ESP_ENABLED,
+    SHOWCASE_ESP_ENABLED,
+    LIGHT_ESP_ENABLED,
+    SHOWCASE_COUNT,
+    LIGHT_DELAY_AFTER_SHOWCASES,
 )
 
 PREVIEW_WIN = "People Counter — Preview"
@@ -71,7 +82,7 @@ class KeyboardReader:
 
             fd  = sys.stdin.fileno()
             old = termios.tcgetattr(fd)
-            tty.setcbreak(fd)           # посимвольно, без эха
+            tty.setcbreak(fd)
 
             try:
                 while not self._stop.is_set():
@@ -102,7 +113,6 @@ class KeyboardReader:
             pass
 
     def get(self) -> Optional[str]:
-        """Неблокирующее получение клавиши. None если очередь пуста."""
         try:
             return self.queue.get_nowait()
         except Empty:
@@ -135,29 +145,21 @@ def open_camera(idx: int) -> cv2.VideoCapture:
 #  Превью
 # ═══════════════════════════════════════════════════════
 
-# Счётчик отложенных flush-итераций после destroyWindow на macOS.
-# Главный цикл вызывает waitKey(1) пока счётчик > 0 — без заморозки UI.
 _cv2_flush_remaining: int = 0
 
 
 def _open_preview():
-    """Окно создаётся первым cv2.imshow — без namedWindow, без лишних окон."""
     print("  [t] Превью открыто  (закрыть: t)")
 
 
 def _close_preview():
-    """
-    Надёжное закрытие окна превью без заморозки.
-    Синхронный flush (waitKey в цикле) на macOS занимает ~800мс за вызов —
-    поэтому flush делегируется главному циклу через _cv2_flush_remaining.
-    """
     global _cv2_flush_remaining
     if _IS_MACOS:
         try:
             cv2.destroyWindow(PREVIEW_WIN)
         except Exception:
             pass
-        _cv2_flush_remaining = 5   # обработаем в главном цикле — без блокировки
+        _cv2_flush_remaining = 5
     else:
         cv2.destroyAllWindows()
         for _ in range(5):
@@ -171,17 +173,24 @@ def _close_preview():
 
 def _print_banner():
     print()
-    print("╔══════════════════════════════════════════════════╗")
-    print("║       People Counter  v3.3  —  MVP              ║")
-    print("║  YOLOv8 + ByteTrack + SQLite                    ║")
-    print("╚══════════════════════════════════════════════════╝")
+    print("╔══════════════════════════════════════════════════════╗")
+    print("║       People Counter  v4.0  —  Showcase + Light     ║")
+    print("║  YOLOv8 + ByteTrack + SQLite + PCA9685 + Реле       ║")
+    print("╚══════════════════════════════════════════════════════╝")
     print()
 
-def _print_help():
-    print("  Клавиши:  t = превью     q / Esc = выход")
+def _print_help(showcase_enabled: bool, light_enabled: bool):
+    print("  Клавиши:")
+    print("    t       — превью            q/Esc — выход")
+    if showcase_enabled:
+        print("    a       — принудительно ВКЛ ВСЕ витрины")
+        print("    z       — снять принуждение со ВСЕХ витрин")
+        print("    m       — режим выбора витрины (затем 1–8)")
+    if light_enabled:
+        print("    l       — принудительно ВКЛ/ВЫКЛ общий свет")
     print()
 
-def _print_status(state: dict):
+def _print_status(state: dict, showcase=None, light=None):
     people = state.get('people_now', 0)
     fps    = state.get('fps', 0.0)
     inf_ms = state.get('inference_ms', 0.0)
@@ -189,10 +198,24 @@ def _print_status(state: dict):
     today  = state.get('today_summary', {})
     visits = today.get('total_visits', 0)
 
-    mark = "●" if people > 0 else "○"
+    mark  = "●" if people > 0 else "○"
     label = f"ЕСТЬ ЛЮДИ ({people} чел)" if people > 0 else "пусто"
-    print(f"  {mark} {label}  |  сессия: {unique} уник.  |  "
-          f"сегодня: {visits} визитов  |  FPS {fps:.0f}  inf {inf_ms:.0f}ms")
+    line  = (f"  {mark} {label}  |  сессия: {unique} уник.  |  "
+             f"сегодня: {visits} визитов  |  FPS {fps:.0f}  inf {inf_ms:.0f}ms")
+
+    if showcase is not None:
+        forced = showcase.get_forced()
+        if forced:
+            showcases_str = ",".join(str(s) for s in sorted(forced))
+            line += f"  |  витрины[F]: {showcases_str}"
+        else:
+            line += "  |  витрины[авто]"
+
+    if light is not None:
+        lf = "СВЕТ[F]" if light.is_forced else "свет[авто]"
+        line += f"  |  {lf}"
+
+    print(line)
 
 
 # ═══════════════════════════════════════════════════════
@@ -224,7 +247,7 @@ def main():
         else:
             print(f"  Зоны уже пусты")
 
-    roi_mgr     = ROIManager(config_path=EXCLUSION_ZONES_FILE)
+    roi_mgr      = ROIManager(config_path=EXCLUSION_ZONES_FILE)
     zones_loaded = roi_mgr.load()
 
     if SETUP_ZONES_ON_START or not zones_loaded:
@@ -262,27 +285,38 @@ def main():
     engine = DetectionEngine(cap, model, roi_mgr, db)
     engine.start()
 
-    # ── ESP8266 (опционально) ───────────────────────────
-    esp = None
-    if ESP_ENABLED:
-        from esp_controller import EspController
-        esp = EspController()
-        esp.start()
+    # ── Showcase ESP ────────────────────────────────────
+    showcase: Optional[object] = None
+    if SHOWCASE_ESP_ENABLED:
+        from showcase_controller import ShowcaseController
+        showcase = ShowcaseController()
+        showcase.start()
+        print(f"  Витрин: {SHOWCASE_COUNT}  |  Light offset: {LIGHT_DELAY_AFTER_SHOWCASES} с")
+
+    # ── Light ESP ───────────────────────────────────────
+    light: Optional[object] = None
+    if LIGHT_ESP_ENABLED:
+        from light_controller import LightController
+        light = LightController()
+        light.start()
 
     kbd = KeyboardReader()
     kbd.start()
 
     print(f"\n  Детекция запущена.")
-    _print_help()
+    _print_help(SHOWCASE_ESP_ENABLED, LIGHT_ESP_ENABLED)
 
     # ── Состояние ──
     global _cv2_flush_remaining
     preview_on    = False
     running       = True
     status_timer  = time.time()
-    prev_occupied = False          # для отслеживания смены занятости зала
+    prev_occupied = False
 
-    # Ctrl+C
+    # Режим выбора витрины (после нажатия 'm')
+    showcase_select_mode = False
+    showcase_select_time = 0.0
+
     def _sigint(sig, frm):
         nonlocal running
         running = False
@@ -294,50 +328,93 @@ def main():
     # ════════════════════════════════════════════════════
     while running:
 
-        # ── Считать клавишу (терминал) ──
+        # ── Считать клавишу ──
         key = kbd.get()
 
-        # ── Обновление превью + cv2 события ──
+        # ── Превью + cv2 события ──
         if preview_on:
             frame = engine.get_latest_frame()
             if frame is not None:
-                cv2.imshow(PREVIEW_WIN, frame)   # imshow ПЕРВЫМ
-
-            cv_key = cv2.waitKey(30) & 0xFF      # затем waitKey (pump events)
+                cv2.imshow(PREVIEW_WIN, frame)
+            cv_key = cv2.waitKey(30) & 0xFF
             if key is None and cv_key not in (255, 0xFF, 0) and cv_key < 128:
                 key = chr(cv_key).lower()
         else:
-            # Без превью — отложенный flush (macOS) или обычная пауза
             if _cv2_flush_remaining > 0:
                 cv2.waitKey(1)
                 _cv2_flush_remaining -= 1
             else:
                 time.sleep(0.03)
 
+        # ── Таймаут режима выбора витрины ──
+        if showcase_select_mode and time.time() - showcase_select_time > 5.0:
+            showcase_select_mode = False
+            print("  [m] Режим выбора витрины истёк")
+
         # ── Обработка клавиш ──
-        if key in ('q', '\x1b'):        # q или Esc
-            running = False
+        if key is not None:
 
-        elif key == 't':
-            if preview_on:
-                _close_preview()
-                preview_on = False
-            else:
-                _open_preview()
-                preview_on = True
+            if showcase_select_mode and key in '12345678':
+                # Нажата цифра в режиме выбора витрины
+                num = int(key)
+                if showcase:
+                    new_state = showcase.toggle_force(num)
+                    state_str = "ПРИНУДИТЕЛЬНО ВКЛ" if new_state else "авто"
+                    print(f"  [m] Витрина {num} → {state_str}")
+                showcase_select_mode = False
 
-        # ── ESP: отслеживание смены занятости ──
-        if esp:
+            elif key in ('q', '\x1b'):          # q или Esc
+                running = False
+
+            elif key == 't':
+                if preview_on:
+                    _close_preview()
+                    preview_on = False
+                else:
+                    _open_preview()
+                    preview_on = True
+
+            elif key == 'a' and showcase:
+                # Принудительно ВКЛ ВСЕ витрины
+                showcase.force_on()
+                print("  [a] ВСЕ витрины → ПРИНУДИТЕЛЬНО ВКЛ")
+
+            elif key == 'z' and showcase:
+                # Снять принуждение со ВСЕХ витрин
+                showcase.force_off()
+                print("  [z] ВСЕ витрины → принуждение снято")
+
+            elif key == 'm' and showcase:
+                # Войти в режим выбора витрины
+                showcase_select_mode = True
+                showcase_select_time = time.time()
+                forced = showcase.get_forced()
+                forced_str = (",".join(str(s) for s in sorted(forced))
+                              if forced else "нет")
+                print(f"  [m] Выбор витрины: нажмите 1–{SHOWCASE_COUNT} "
+                      f"(принудительно: {forced_str}, таймаут 5 с)")
+
+            elif key == 'l' and light:
+                # Переключить принудительный режим общего света
+                new_state = light.toggle_force()
+                print(f"  [l] Общий свет → "
+                      f"{'ПРИНУДИТЕЛЬНО ВКЛ' if new_state else 'принуждение снято'}")
+
+        # ── Авто-режим: отслеживание смены занятости ──
+        if showcase or light:
             state    = engine.get_state()
             occupied = state.get('people_now', 0) > 0
             if occupied != prev_occupied:
-                esp.set_occupied(occupied)
                 prev_occupied = occupied
+                if showcase:
+                    showcase.set_occupied(occupied)
+                if light:
+                    light.set_occupied(occupied)
 
-        # ── Периодический статус в терминал (каждые 10 сек) ──
+        # ── Периодический статус (каждые 10 с) ──
         now = time.time()
         if now - status_timer >= 10.0:
-            _print_status(engine.get_state())
+            _print_status(engine.get_state(), showcase, light)
             status_timer = now
 
         # ── Engine упал? ──
@@ -350,14 +427,15 @@ def main():
     # ════════════════════════════════════════════════════
     print("\nЗавершение...")
 
-    if esp:
-        esp.stop()
+    if showcase:
+        showcase.shutdown()   # Отправляет OFF на ESP перед остановкой потоков
+    if light:
+        light.shutdown()      # Отправляет OFF на ESP перед остановкой потоков
     kbd.stop()
 
     if preview_on:
         _close_preview()
     else:
-        # На случай если есть «призрачные» окна
         cv2.destroyAllWindows()
         for _ in range(5):
             cv2.waitKey(1)
