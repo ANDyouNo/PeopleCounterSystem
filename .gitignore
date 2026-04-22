@@ -1,6 +1,57 @@
+# ─── Python ───────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# ─── Node / Frontend ──────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ─── Data & Runtime ───────────────────────────────────────────
+# Сгенерированные при работе системы — не коммитить
+data/
 *.db
-*.onnx
+*.db-shm
+*.db-wal
+
+# ─── ML Models ────────────────────────────────────────────────
+# Скачиваются автоматически при первом запуске
 *.pt
-venv
-__pycache__
+*.onnx
+*.torchscript
+runs/
+
+# ─── OS ───────────────────────────────────────────────────────
 .DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ─── Editors ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ─── Env / Secrets ────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
