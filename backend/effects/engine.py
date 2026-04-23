@@ -160,7 +160,7 @@ class EffectEngine:
     async def _tick_effect(self):
         t   = time.monotonic() - self._t_start
         n   = self._state.get_setting("showcase_count", 8)
-        ppl = getattr(self._state, "people_now", 0)
+        ppl = self._state.get_detection_state().get("people_now", 0)
         ctx = EffectContext(channel_count=n, people=ppl, fps=FPS)
 
         try:
