@@ -21,8 +21,10 @@ from fastapi.staticfiles import StaticFiles
 from backend.state import AppState
 from backend.db.database import Database
 from backend.api.routes import settings, control, stats, stream, zones
+from backend.api.routes import effects as effects_router
 
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+DOCS_DIR      = Path(__file__).parent.parent / "docs"
 
 
 # ─── Lifespan ─────────────────────────────────────────────────
@@ -105,6 +107,14 @@ async def lifespan(app: FastAPI):
         light.start()
         print("[startup] LightController запущен")
 
+    # ── Effect Engine ──
+    if state.showcase:
+        from backend.effects import EffectEngine
+        effect_engine = EffectEngine(state.showcase, state)
+        app.state.effect_engine = effect_engine
+        await effect_engine.start()
+        print("[startup] EffectEngine запущен")
+
     # ── Asyncio loop в AppState ──
     state._loop = asyncio.get_running_loop()
 
@@ -116,6 +126,10 @@ async def lifespan(app: FastAPI):
 
     # ─── Завершение ───────────────────────────────────────────
     print("\n[shutdown] Завершение...")
+
+    effect_engine = getattr(app.state, "effect_engine", None)
+    if effect_engine:
+        await effect_engine.stop()
 
     if state.showcase:
         state.showcase.shutdown()
@@ -158,7 +172,15 @@ app.include_router(settings.router)
 app.include_router(control.router)
 app.include_router(stats.router)
 app.include_router(zones.router)
+app.include_router(effects_router.router)
 
+
+# ── Документация ──
+from fastapi.responses import FileResponse as _FR
+from fastapi.staticfiles import StaticFiles as _SS
+
+if DOCS_DIR.exists():
+    app.mount("/docs", _SS(directory=str(DOCS_DIR), html=False), name="docs")
 
 # ── Статический фронтенд (только если собран) ──
 if FRONTEND_DIST.exists():

@@ -54,6 +54,22 @@ export interface ZonesResponse {
   zones: ExclusionZone[]
 }
 
+export interface Effect {
+  id: string
+  name: string
+  description: string
+  code: string
+  enabled: boolean
+  created_at: number
+}
+
+export interface EffectsStatus {
+  enabled: boolean
+  active_id: string | null
+  active_name: string | null
+  last_error: string | null
+}
+
 const BASE = ''
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -113,4 +129,36 @@ export const api = {
     }),
 
   getSnapshotUrl: () => '/api/zones/snapshot',
+
+  // Effects
+  getEffects: () => request<Effect[]>('/api/effects'),
+
+  getEffectsStatus: () => request<EffectsStatus>('/api/effects/status'),
+
+  setEffectsEnabled: (enabled: boolean) =>
+    request<EffectsStatus>('/api/effects/enabled', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  createEffect: (name: string, code: string, description?: string) =>
+    request<Effect>('/api/effects', {
+      method: 'POST',
+      body: JSON.stringify({ name, code, description: description ?? '' }),
+    }),
+
+  updateEffect: (id: string, patch: Partial<Pick<Effect, 'name' | 'code' | 'description' | 'enabled'>>) =>
+    request<Effect>(`/api/effects/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteEffect: (id: string) =>
+    fetch(`/api/effects/${id}`, { method: 'DELETE' }),
+
+  activateEffect: (id: string) =>
+    request<EffectsStatus>(`/api/effects/${id}/activate`, { method: 'POST' }),
+
+  deactivateEffect: () =>
+    request<{ ok: boolean }>('/api/effects/deactivate', { method: 'POST' }),
 }

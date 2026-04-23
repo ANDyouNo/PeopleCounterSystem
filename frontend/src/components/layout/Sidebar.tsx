@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Sliders, BarChart3, Settings, Camera, ScanLine } from 'lucide-react'
+import { LayoutDashboard, Sliders, BarChart3, Settings, Camera, ScanLine, Sparkles } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 interface SidebarProps {
@@ -11,6 +11,7 @@ const navItems = [
   { to: '/control', label: 'Control', icon: Sliders, end: false },
   { to: '/analytics', label: 'Analytics', icon: BarChart3, end: false },
   { to: '/zones', label: 'Zones', icon: ScanLine, end: false },
+  { to: '/effects', label: 'Effects', icon: Sparkles, end: false },
   { to: '/settings', label: 'Settings', icon: Settings, end: false },
 ]
 

@@ -12,18 +12,22 @@
  *   - Adafruit PWM Servo Driver Library  (автоматически тянет Adafruit BusIO)
  *
  * UDP-протокол (порт CMD_PORT):
- *   ON            — авто-включение (камера зафиксировала людей)
- *                   Витрины загораются по очереди с плавным нарастанием.
- *   OFF           — авто-выключение (зал пуст)
- *                   Все авто-витрины гаснут одновременно, плавно.
+ *   ON            — авто-включение (последовательное, с плавным нарастанием)
+ *   OFF           — авто-выключение (все гаснут плавно)
  *   FON:1,3,5     — принудительно включить витрины 1,3,5 (нумерация с 1)
- *                   Горят независимо от режима камеры.
  *   FOFF:1,3,5    — снять принуждение с витрин 1,3,5
- *                   Если камера сейчас «пусто» — витрины плавно гаснут.
  *   MAP:1=0,2=3   — переназначить канал PCA9685 для витрины
- *                   Формат: витрина(1-8)=канал(0-15)
  *   STATUS        — вывести состояние в Serial
  *   1 / 0         — обратная совместимость: 1=ON, 0=OFF
+ *
+ *   — Режим прямого управления (Effects) —
+ *   MODE:direct   — Python берёт управление PWM напрямую
+ *                   Начинается watchdog: нет пакетов 3с → все каналы 0
+ *   MODE:auto     — вернуться в автоматический режим (ON/OFF/FON/FOFF)
+ *   PWM:0=4095,1=3200,2=0,...
+ *                 — установить PWM каждого PCA-канала напрямую (0-15, 0-4095)
+ *                   Сбрасывает watchdog. Только в MODE:direct.
+ *   KA            — keepalive: сбросить watchdog без изменения значений
  *
  * Broadcast-анонс "PCOUNTER_SHOW" → порт ANNOUNCE_PORT каждые 5 с.
  *
@@ -47,10 +51,10 @@ const char* WIFI_PASSWORD = "qwerty123";
 //  Сетевые параметры
 // ════════════════════════════════════════════
 
-const int  CMD_PORT      = 4210;        // Порт приёма команд от Python
-const int  ANNOUNCE_PORT = 4211;        // Порт рассылки анонсов
+const int  CMD_PORT      = 4210;
+const int  ANNOUNCE_PORT = 4211;
 const char* ANNOUNCE_MSG = "PCOUNTER_SHOW";
-const unsigned long ANNOUNCE_INTERVAL  = 5000; // мс
+const unsigned long ANNOUNCE_INTERVAL = 5000;  // мс
 
 // ════════════════════════════════════════════
 //  PCA9685
@@ -58,18 +62,24 @@ const unsigned long ANNOUNCE_INTERVAL  = 5000; // мс
 
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(0x40);
 
-const int PWM_FREQ  = 1000;   // Гц (для LED-лент)
-const int PWM_MAX   = 4095;   // 12-bit максимум
-const int PWM_MIN   = 0;
+const int PWM_FREQ = 1000;   // Гц (для LED-лент)
+const int PWM_MAX  = 4095;   // 12-bit максимум
+const int PWM_MIN  = 0;
 
 // ════════════════════════════════════════════
-//  Параметры анимации
+//  Параметры анимации (автоматический режим)
 // ════════════════════════════════════════════
 
 const int  FADE_STEP_ON    = 60;   // Шаг яркости за тик при включении
 const int  FADE_STEP_OFF   = 80;   // Шаг яркости за тик при выключении
 const int  FADE_TICK_MS    = 15;   // Интервал тика (мс)
 const int  SEQ_DELAY_MS    = 350;  // Пауза между запуском соседних витрин (мс)
+
+// ════════════════════════════════════════════
+//  Watchdog для режима direct (effects)
+// ════════════════════════════════════════════
+
+const unsigned long PWM_WATCHDOG_MS = 3000;  // 3 секунды без пакетов → все 0
 
 // ════════════════════════════════════════════
 //  Константы витрин
@@ -82,18 +92,24 @@ const int NUM_SHOWCASES = 8;
 // ════════════════════════════════════════════
 
 // channelMap[i] = номер канала PCA9685 для витрины i (0-based)
-int channelMap[NUM_SHOWCASES] = {0, 1, 2, 3, 4, 5, 6, 7};
+// Каналы изменены специяльно.   1. 2. 3. 4. 5. 6. 7. 8. 
+int channelMap[NUM_SHOWCASES] = {0, 1, 2, 3, 5, 7, 6, 4};
 
 int  curBrightness[NUM_SHOWCASES];   // Текущая яркость (0..PWM_MAX)
-int  tgtBrightness[NUM_SHOWCASES];   // Целевая яркость
+int  tgtBrightness[NUM_SHOWCASES];   // Целевая яркость (автоматический режим)
 
 bool forcedOn[NUM_SHOWCASES];        // true = принудительно включена
 bool autoMode = false;               // true = камера зафиксировала людей
 
+// ── Режим прямого управления (Effects) ──
+bool          directMode     = false;
+int           directPWM[NUM_SHOWCASES] = {0};  // PWM-значения витрин (индекс = витрина, не PCA-канал)
+unsigned long lastPktTime    = 0;    // Время последнего пакета в direct-режиме
+
 // ── Последовательное включение ──
-bool         seqActive   = false;
-int          seqIndex    = 0;        // Следующая витрина в очереди
-unsigned long seqNextMs  = 0;        // Время старта следующей
+bool          seqActive   = false;
+int           seqIndex    = 0;
+unsigned long seqNextMs   = 0;
 
 // ── Таймеры ──
 unsigned long lastFadeTick = 0;
@@ -110,22 +126,41 @@ void setPWM(int showcase, int brightness) {
     pca.setPWM(channelMap[showcase], 0, brightness);
 }
 
+// Установить PWM напрямую по номеру канала PCA (0-15)
+void setChannelPWM(int channel, int value) {
+    value = constrain(value, PWM_MIN, PWM_MAX);
+    pca.setPWM(channel, 0, value);
+}
+
+// Погасить все 16 каналов PCA9685
+void allChannelsOff() {
+    for (int ch = 0; ch < 16; ch++) {
+        pca.setPWM(ch, 0, PWM_MIN);
+    }
+    for (int i = 0; i < NUM_SHOWCASES; i++) {
+        curBrightness[i] = 0;
+        tgtBrightness[i] = 0;
+    }
+    for (int s = 0; s < NUM_SHOWCASES; s++) {
+        directPWM[s] = 0;
+    }
+}
+
 // ════════════════════════════════════════════
-//  Обработчики команд
+//  Обработчики автоматических команд
 // ════════════════════════════════════════════
 
 void cmdAutoOn() {
-    autoMode = true;
-    // Запускаем последовательное включение для витрин, которые ещё не горят
-    seqActive  = true;
-    seqIndex   = 0;
-    seqNextMs  = millis();
+    autoMode  = true;
+    seqActive = true;
+    seqIndex  = 0;
+    seqNextMs = millis();
     Serial.println("[CMD] AUTO ON → последовательное включение");
 }
 
 void cmdAutoOff() {
-    autoMode   = false;
-    seqActive  = false;           // Отмена незаконченного sequencing
+    autoMode  = false;
+    seqActive = false;
     Serial.println("[CMD] AUTO OFF → гасим авто-витрины");
     for (int i = 0; i < NUM_SHOWCASES; i++) {
         if (!forcedOn[i]) {
@@ -141,7 +176,7 @@ int parseList(const String& s, int* out) {
     for (int i = 0; i <= (int)s.length(); i++) {
         if (i == (int)s.length() || s[i] == ',') {
             if (i > start) {
-                int v = s.substring(start, i).toInt() - 1; // 1-based → 0-based
+                int v = s.substring(start, i).toInt() - 1;
                 if (v >= 0 && v < NUM_SHOWCASES) out[count++] = v;
             }
             start = i + 1;
@@ -153,50 +188,87 @@ int parseList(const String& s, int* out) {
 void cmdForceOn(const String& arg) {
     int idxs[NUM_SHOWCASES];
     int n = parseList(arg, idxs);
-    Serial.printf("[CMD] FON: принудительно ВКЛ %d витрин\n", n);
     for (int k = 0; k < n; k++) {
         int i = idxs[k];
-        forcedOn[i]     = true;
+        forcedOn[i]      = true;
         tgtBrightness[i] = PWM_MAX;
-        Serial.printf("  Витрина %d → ПРИНУДИТЕЛЬНО (канал %d)\n", i+1, channelMap[i]);
     }
+    Serial.printf("[CMD] FON: %d витрин\n", n);
 }
 
 void cmdForceOff(const String& arg) {
     int idxs[NUM_SHOWCASES];
     int n = parseList(arg, idxs);
-    Serial.printf("[CMD] FOFF: снимаем принуждение с %d витрин\n", n);
     for (int k = 0; k < n; k++) {
         int i = idxs[k];
         forcedOn[i] = false;
-        // Если авто-режим выключен — витрина гаснет; если включён — остаётся гореть
-        if (!autoMode) {
-            tgtBrightness[i] = PWM_MIN;
-        }
-        // (Если autoMode=true, tgtBrightness уже = PWM_MAX, оставляем как есть)
-        Serial.printf("  Витрина %d → авто (канал %d)\n", i+1, channelMap[i]);
+        if (!autoMode) tgtBrightness[i] = PWM_MIN;
     }
+    Serial.printf("[CMD] FOFF: %d витрин\n", n);
 }
 
-// MAP:1=0,2=3,4=7 — витрина(1-8) = канал PCA9685(0-15)
 void cmdMap(const String& arg) {
-    Serial.println("[CMD] MAP: перенастройка каналов");
     int start = 0;
     for (int i = 0; i <= (int)arg.length(); i++) {
         if (i == (int)arg.length() || arg[i] == ',') {
             String pair = arg.substring(start, i);
             int eq = pair.indexOf('=');
             if (eq > 0) {
-                int showcase = pair.substring(0, eq).toInt() - 1; // 0-based
+                int showcase = pair.substring(0, eq).toInt() - 1;
                 int channel  = pair.substring(eq + 1).toInt();
                 if (showcase >= 0 && showcase < NUM_SHOWCASES &&
                     channel  >= 0 && channel  < 16) {
-                    // Переключить PCA9685: сначала погасить старый канал
                     pca.setPWM(channelMap[showcase], 0, PWM_MIN);
                     channelMap[showcase] = channel;
-                    // Восстановить текущую яркость на новом канале
                     pca.setPWM(channel, 0, curBrightness[showcase]);
-                    Serial.printf("  Витрина %d → канал %d\n", showcase+1, channel);
+                }
+            }
+            start = i + 1;
+        }
+    }
+    Serial.println("[CMD] MAP: каналы обновлены");
+}
+
+void cmdStatus() {
+    Serial.println("═══ STATUS ═══");
+    Serial.printf("mode     : %s\n", directMode ? "DIRECT" : (autoMode ? "AUTO-ON" : "AUTO-OFF"));
+    Serial.printf("seqActive: %s  seqIndex: %d\n", seqActive ? "yes" : "no", seqIndex);
+    if (directMode) {
+        Serial.printf("watchdog : %lu мс назад\n", millis() - lastPktTime);
+        for (int s = 0; s < NUM_SHOWCASES; s++) {
+            Serial.printf("  showcase[%d] -> PCA ch%02d = %d\n", s, channelMap[s], directPWM[s]);
+        }
+    } else {
+        for (int i = 0; i < NUM_SHOWCASES; i++) {
+            Serial.printf("  [%d] ch=%-2d  cur=%-4d  tgt=%-4d  forced=%s\n",
+                          i+1, channelMap[i], curBrightness[i], tgtBrightness[i],
+                          forcedOn[i] ? "YES" : "no ");
+        }
+    }
+    Serial.println("══════════════");
+}
+
+// ════════════════════════════════════════════
+//  Обработчики команд прямого управления
+// ════════════════════════════════════════════
+
+// PWM:0=4095,1=3200,7=0,...
+// Индексы — витрины (0..NUM_SHOWCASES-1), маппинг на PCA каналы через channelMap
+void cmdPWM(const String& arg) {
+    lastPktTime = millis();
+    int start = 0;
+    for (int i = 0; i <= (int)arg.length(); i++) {
+        if (i == (int)arg.length() || arg[i] == ',') {
+            String pair = arg.substring(start, i);
+            int eq = pair.indexOf('=');
+            if (eq > 0) {
+                int showcase = pair.substring(0, eq).toInt();
+                int val      = pair.substring(eq + 1).toInt();
+                if (showcase >= 0 && showcase < NUM_SHOWCASES) {
+                    val = constrain(val, PWM_MIN, PWM_MAX);
+                    directPWM[showcase]    = val;
+                    curBrightness[showcase] = val;
+                    setPWM(showcase, val);  // проходит через channelMap!
                 }
             }
             start = i + 1;
@@ -204,16 +276,20 @@ void cmdMap(const String& arg) {
     }
 }
 
-void cmdStatus() {
-    Serial.println("═══ STATUS ═══");
-    Serial.printf("autoMode : %s\n", autoMode ? "ON" : "OFF");
-    Serial.printf("seqActive: %s  seqIndex: %d\n", seqActive ? "yes" : "no", seqIndex);
-    for (int i = 0; i < NUM_SHOWCASES; i++) {
-        Serial.printf("  [%d] канал=%-2d  cur=%-4d  tgt=%-4d  forced=%s\n",
-                      i+1, channelMap[i], curBrightness[i], tgtBrightness[i],
-                      forcedOn[i] ? "YES" : "no ");
+void cmdModeSwitch(const String& arg) {
+    if (arg == "direct") {
+        directMode  = true;
+        lastPktTime = millis();
+        Serial.println("[CMD] MODE:direct — Python взял управление PWM");
+    } else if (arg == "auto") {
+        directMode = false;
+        Serial.println("[CMD] MODE:auto — возврат в автоматический режим");
+        // Восстанавливаем состояние витрин по autoMode/forcedOn
+        for (int i = 0; i < NUM_SHOWCASES; i++) {
+            bool shouldOn = autoMode || forcedOn[i];
+            tgtBrightness[i] = shouldOn ? PWM_MAX : PWM_MIN;
+        }
     }
-    Serial.println("══════════════");
 }
 
 // ════════════════════════════════════════════
@@ -223,16 +299,37 @@ void cmdStatus() {
 void processCommand(const String& raw) {
     String cmd = raw;
     cmd.trim();
-    Serial.printf("→ CMD: \"%s\"\n", cmd.c_str());
 
-    if      (cmd == "ON"  || cmd == "1") { cmdAutoOn();  }
-    else if (cmd == "OFF" || cmd == "0") { cmdAutoOff(); }
-    else if (cmd.startsWith("FON:"))     { cmdForceOn(cmd.substring(4));  }
-    else if (cmd.startsWith("FOFF:"))    { cmdForceOff(cmd.substring(5)); }
-    else if (cmd.startsWith("MAP:"))     { cmdMap(cmd.substring(4));      }
-    else if (cmd == "STATUS")            { cmdStatus(); }
+    // В direct-режиме любой пакет (кроме MODE:auto) сбрасывает watchdog
+    if (directMode && cmd != "MODE:auto") {
+        lastPktTime = millis();
+    }
+
+    if      (cmd == "ON"  || cmd == "1")    { if (!directMode) cmdAutoOn();  }
+    else if (cmd == "OFF" || cmd == "0")    { if (!directMode) cmdAutoOff(); }
+    else if (cmd.startsWith("FON:"))        { if (!directMode) cmdForceOn(cmd.substring(4));  }
+    else if (cmd.startsWith("FOFF:"))       { if (!directMode) cmdForceOff(cmd.substring(5)); }
+    else if (cmd.startsWith("MAP:"))        { cmdMap(cmd.substring(4));   }
+    else if (cmd.startsWith("PWM:"))        { if (directMode) cmdPWM(cmd.substring(4)); }
+    else if (cmd.startsWith("MODE:"))       { cmdModeSwitch(cmd.substring(5)); }
+    else if (cmd == "KA")                   { /* keepalive — watchdog уже сброшен выше */ }
+    else if (cmd == "STATUS")               { cmdStatus(); }
     else {
         Serial.printf("  ? Неизвестная команда: \"%s\"\n", cmd.c_str());
+    }
+}
+
+// ════════════════════════════════════════════
+//  Watchdog проверка (direct-режим)
+// ════════════════════════════════════════════
+
+void tickWatchdog() {
+    if (!directMode) return;
+    if (millis() - lastPktTime > PWM_WATCHDOG_MS) {
+        Serial.println("[WATCHDOG] Нет пакетов 3с → все каналы выключены, возврат в AUTO");
+        allChannelsOff();
+        directMode = false;
+        autoMode   = false;
     }
 }
 
@@ -241,34 +338,29 @@ void processCommand(const String& raw) {
 // ════════════════════════════════════════════
 
 void tickSequential() {
-    if (!seqActive) return;
+    if (!seqActive || directMode) return;
     unsigned long now = millis();
     if (now < seqNextMs) return;
 
-    // Ищем следующую витрину, которую нужно включить
     while (seqIndex < NUM_SHOWCASES) {
         int i = seqIndex;
         seqIndex++;
         bool shouldBeOn = autoMode || forcedOn[i];
         if (shouldBeOn && tgtBrightness[i] < PWM_MAX) {
             tgtBrightness[i] = PWM_MAX;
-            Serial.printf("  [SEQ] Витрина %d → включение\n", i + 1);
             seqNextMs = now + SEQ_DELAY_MS;
-            return; // Ждём паузу перед следующей
+            return;
         }
-        // Уже горит или не должна гореть → пропускаем мгновенно
     }
-
-    // Все витрины обработаны
     seqActive = false;
-    Serial.println("  [SEQ] Последовательное включение завершено");
 }
 
 // ════════════════════════════════════════════
-//  Fade-тик: двигаем cur → tgt для всех витрин
+//  Fade-тик (только в автоматическом режиме)
 // ════════════════════════════════════════════
 
 void tickFade() {
+    if (directMode) return;
     unsigned long now = millis();
     if (now - lastFadeTick < (unsigned long)FADE_TICK_MS) return;
     lastFadeTick = now;
@@ -311,22 +403,21 @@ void setup() {
     Serial.println("\n\n=== People Counter — Showcase Controller ===");
 
     // ── PCA9685 ──
-    // SDA = D2 = GPIO4,  SCL = D1 = GPIO5
     Wire.begin(4, 5);
     pca.begin();
-    pca.setOscillatorFrequency(27000000); // Коррекция частоты генератора
+    pca.setOscillatorFrequency(27000000);
     pca.setPWMFreq(PWM_FREQ);
     delay(10);
 
-    // Инициализация массивов
     for (int i = 0; i < NUM_SHOWCASES; i++) {
         curBrightness[i] = 0;
         tgtBrightness[i] = 0;
         forcedOn[i]      = false;
         setPWM(i, 0);
     }
-    Serial.printf("  PCA9685 OK  (PWM %d Гц, каналы 0-%d)\n", PWM_FREQ, NUM_SHOWCASES-1);
-    Serial.println("  Маппинг по умолчанию: витрина N → канал N-1");
+    for (int s = 0; s < NUM_SHOWCASES; s++) directPWM[s] = 0;
+
+    Serial.printf("  PCA9685 OK  (PWM %d Гц, каналы 0-%d)\n", PWM_FREQ, NUM_SHOWCASES - 1);
 
     // ── LED ──
     pinMode(LED_BUILTIN, OUTPUT);
@@ -341,21 +432,16 @@ void setup() {
         delay(100); digitalWrite(LED_BUILTIN, HIGH);
         Serial.print(".");
     }
-    Serial.print("\nWiFi ОК  IP: ");
+    Serial.print("\nWiFi OK  IP: ");
     Serial.println(WiFi.localIP());
-
-    // Отключаем modem-sleep — без этого ESP8266 «засыпает» между DTIM-маяками
-    // и входящие UDP-пакеты задерживаются на 1–3 секунды.
     WiFi.setSleepMode(WIFI_NONE_SLEEP);
 
     // ── UDP ──
     udp.begin(CMD_PORT);
-    Serial.printf("UDP слушает : %d\n", CMD_PORT);
-    Serial.printf("Анонс       : broadcast:%d каждые %lu с\n",
-                  ANNOUNCE_PORT, ANNOUNCE_INTERVAL / 1000);
+    Serial.printf("UDP: порт %d\n", CMD_PORT);
+    Serial.printf("Анонс: broadcast:%d каждые %lus\n", ANNOUNCE_PORT, ANNOUNCE_INTERVAL / 1000);
+    Serial.println("Команды: ON|OFF|FON:1,2|FOFF:1,2|MAP:1=3|MODE:direct|MODE:auto|PWM:0=4095|KA|STATUS");
     Serial.println("============================================\n");
-    Serial.println("Команды: ON | OFF | FON:1,2 | FOFF:1,2 | MAP:1=3 | STATUS");
-    Serial.println();
 
     sendAnnounce();
     lastAnnounce = millis();
@@ -370,13 +456,16 @@ void loop() {
     // ── Приём UDP ──
     int pktSize = udp.parsePacket();
     if (pktSize > 0) {
-        char buf[128] = {0};
+        char buf[256] = {0};
         int  len = udp.read(buf, sizeof(buf) - 1);
         buf[len] = '\0';
         processCommand(String(buf));
     }
 
-    // ── Анимация ──
+    // ── Watchdog ──
+    tickWatchdog();
+
+    // ── Анимация (только в auto-режиме) ──
     tickSequential();
     tickFade();
 
@@ -387,7 +476,7 @@ void loop() {
         sendAnnounce();
     }
 
-    // ── Мигание LED ("жив") ──
+    // ── Мигание LED ──
     static unsigned long lastBlink = 0;
     static bool ledState = false;
     if (now - lastBlink >= 3000) {

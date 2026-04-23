@@ -132,6 +132,35 @@ class ShowcaseController:
             return
         self._send("MAP:" + ",".join(f"{s}={ch}" for s, ch in mapping.items()))
 
+    # ── Effects / Direct PWM mode ────────────────────────────────
+
+    def enable_direct(self):
+        """Переключить ESP в режим прямого управления PWM (для эффектов)."""
+        self._send("MODE:direct")
+
+    def disable_direct(self):
+        """Вернуть ESP в автоматический режим (ON/OFF/FON)."""
+        self._send("MODE:auto")
+
+    def send_pwm(self, channel_values: list[float]):
+        """Отправить PWM-значения для витрин.
+
+        channel_values — список float [0.0 … 1.0], индекс соответствует
+        номеру витрины (0-based). Канал PCA9685 берётся из channelMap ESP.
+        """
+        if not channel_values:
+            return
+        count = self._state.get_setting("showcase_count", 8)
+        parts: list[str] = []
+        for i, v in enumerate(channel_values[:count]):
+            pwm = int(max(0.0, min(1.0, float(v))) * 4095)
+            parts.append(f"{i}={pwm}")
+        self._send("PWM:" + ",".join(parts))
+
+    def send_keepalive(self):
+        """Сбросить watchdog на ESP без изменения PWM-значений."""
+        self._send("KA")
+
     # ── Приватные ────────────────────────────────────────────────
 
     def _cancel_pending(self):

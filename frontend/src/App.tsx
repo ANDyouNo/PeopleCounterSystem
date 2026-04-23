@@ -5,6 +5,7 @@ import ControlPage from './pages/ControlPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import SettingsPage from './pages/SettingsPage'
 import ZonesPage from './pages/ZonesPage'
+import EffectsPage from './pages/EffectsPage'
 import { ToastProvider } from './components/ui/toast'
 
 function App() {
@@ -17,6 +18,7 @@ function App() {
             <Route path="control" element={<ControlPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
             <Route path="zones" element={<ZonesPage />} />
+            <Route path="effects" element={<EffectsPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Routes>
