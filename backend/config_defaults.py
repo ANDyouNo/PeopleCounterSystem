@@ -6,7 +6,7 @@
   value           — значение по умолчанию (строка, парсится по type)
   type            — int | float | bool | string
   description     — человекочитаемое описание (отображается в UI)
-  category        — группа в UI: camera | detection | showcase | light
+  category        — группа в UI: camera | detection | showcase | light | notifier
   restart_required — True если изменение требует перезапуска
 """
 
@@ -143,6 +143,15 @@ DEFAULT_SETTINGS: dict = {
         "description": "Задержка выключения общего света (с)",
         "category": "light",
         "restart_required": False,
+    },
+
+    # ── Оповещатель посетителей (ESP32-C3) ──────────────────────
+    "notifier_esp_enabled": {
+        "value": "true",
+        "type": "bool",
+        "description": "Включить оповещатель посетителей на ESP32-C3",
+        "category": "notifier",
+        "restart_required": True,
     },
 }
 

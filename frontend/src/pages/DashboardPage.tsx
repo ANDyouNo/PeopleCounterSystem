@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Users, Activity, Cpu, TrendingUp, Camera, Wifi, WifiOff, Clock, Eye } from 'lucide-react'
+import { Users, Activity, Cpu, TrendingUp, Camera, Wifi, WifiOff, Clock, Eye, BellRing, Battery } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
 import { useAppState } from '../components/layout/Layout'
@@ -65,6 +65,9 @@ function StatusIndicator({ label, online }: { label: string; online: boolean }) 
 export default function DashboardPage() {
   const { state } = useAppState()
   const [cameraError, setCameraError] = useState(false)
+  const batteryMv = typeof state.notifier_battery_mv === 'number'
+    ? state.notifier_battery_mv
+    : null
 
   return (
     <div className="space-y-6">
@@ -194,6 +197,39 @@ export default function DashboardPage() {
                   {state.light_forced ? 'ON' : 'Off'}
                 </Badge>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Visitor notifier ESP32-C3 */}
+          <Card className={cn(state.notifier_battery_low && 'border-yellow-400')}>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                {state.notifier_connected ? (
+                  <BellRing className="h-4 w-4 text-green-500" />
+                ) : (
+                  <WifiOff className="h-4 w-4 text-muted-foreground" />
+                )}
+                Visitor Notifier ESP32-C3
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <StatusIndicator label="Connection" online={state.notifier_connected} />
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  <Battery className={cn('h-4 w-4', state.notifier_battery_low && 'text-yellow-500')} />
+                  Battery
+                </span>
+                {batteryMv === null ? (
+                  <span className="text-sm text-muted-foreground">No data</span>
+                ) : (
+                  <Badge variant={state.notifier_battery_low ? 'warning' : 'secondary'}>
+                    {(batteryMv / 1000).toFixed(2)} V{state.notifier_battery_low ? ' · Low' : ''}
+                  </Badge>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                LEDs: battery, PC connection, and people in the room.
+              </p>
             </CardContent>
           </Card>
 

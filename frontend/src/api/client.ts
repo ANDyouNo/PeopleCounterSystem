@@ -10,6 +10,9 @@ export interface AppState {
   light_connected: boolean
   showcase_forced: number[]
   light_forced: boolean
+  notifier_connected: boolean
+  notifier_battery_mv: number | null
+  notifier_battery_low: boolean
 }
 
 export interface SettingItem {

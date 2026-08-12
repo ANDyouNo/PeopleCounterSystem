@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from backend.core.detection_engine import DetectionEngine
     from backend.core.showcase_controller import ShowcaseController
     from backend.core.light_controller import LightController
+    from backend.core.notifier_controller import NotifierController
     from backend.db.database import Database
 
 
@@ -29,6 +30,7 @@ class AppState:
         self.engine: Optional["DetectionEngine"] = None
         self.showcase: Optional["ShowcaseController"] = None
         self.light: Optional["LightController"] = None
+        self.notifier: Optional["NotifierController"] = None
 
         # ── Настройки (загружаются из БД при старте) ──
         self._settings: dict = {}
@@ -111,6 +113,12 @@ class AppState:
             sorted(self.showcase.get_forced()) if self.showcase else [])
         state["light_forced"] = (
             self.light.is_forced if self.light else False)
+        state["notifier_connected"] = (
+            self.notifier.connected if self.notifier else False)
+        state["notifier_battery_mv"] = (
+            self.notifier.battery_mv if self.notifier else None)
+        state["notifier_battery_low"] = (
+            self.notifier.battery_low if self.notifier else False)
         return state
 
     # ── WebSocket ────────────────────────────────────────────────
@@ -142,6 +150,11 @@ class AppState:
         if dead:
             async with self._ws_lock:
                 self._ws_clients -= dead
+
+    def request_state_broadcast(self):
+        """Запросить рассылку состояния из фонового потока контроллера."""
+        if self._loop and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self._broadcast_state(), self._loop)
 
     async def broadcast_log(self, message: str, level: str = "info"):
         """Разослать лог-сообщение всем WebSocket клиентам."""
@@ -176,3 +189,5 @@ class AppState:
             self.showcase.set_occupied(occupied)
         if self.light:
             self.light.set_occupied(occupied)
+        if self.notifier:
+            self.notifier.set_occupied(occupied)

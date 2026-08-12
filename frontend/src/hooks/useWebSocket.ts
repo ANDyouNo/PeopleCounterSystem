@@ -23,6 +23,9 @@ const DEFAULT_STATE: AppState = {
   light_connected: false,
   showcase_forced: [],
   light_forced: false,
+  notifier_connected: false,
+  notifier_battery_mv: null,
+  notifier_battery_low: false,
 }
 
 export function useWebSocket(url: string): UseWebSocketReturn {

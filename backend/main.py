@@ -107,6 +107,14 @@ async def lifespan(app: FastAPI):
         light.start()
         print("[startup] LightController запущен")
 
+    # ── Оповещатель ESP32-C3 ──
+    if state.get_setting("notifier_esp_enabled", True):
+        from backend.core.notifier_controller import NotifierController
+        notifier = NotifierController(state)
+        state.notifier = notifier
+        notifier.start()
+        print("[startup] NotifierController запущен")
+
     # ── Effect Engine ──
     if state.showcase:
         from backend.effects import EffectEngine
@@ -135,6 +143,8 @@ async def lifespan(app: FastAPI):
         state.showcase.shutdown()
     if state.light:
         state.light.shutdown()
+    if state.notifier:
+        state.notifier.shutdown()
     if engine:
         engine.stop()
         engine.join(timeout=5)
