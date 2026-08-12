@@ -153,6 +153,13 @@ DEFAULT_SETTINGS: dict = {
         "category": "notifier",
         "restart_required": True,
     },
+    "notifier_delay_off": {
+        "value": "10",
+        "type": "int",
+        "description": "Задержка выключения индикатора людей (с) после потери детекции",
+        "category": "notifier",
+        "restart_required": False,
+    },
 }
 
 

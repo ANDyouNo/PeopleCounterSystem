@@ -31,7 +31,10 @@ class NotifierController:
         self._battery_mv: Optional[int] = None
         self._last_seen = 0.0
         self._occupied = False
+        self._occupancy_generation = 0
         self._lock = threading.Lock()
+        self._off_timer: Optional[threading.Timer] = None
+        self._timer_lock = threading.Lock()
         self._stop = threading.Event()
         self._send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._listener = threading.Thread(
@@ -43,11 +46,13 @@ class NotifierController:
     def shutdown(self):
         # Сбрасываем индикатор людей. После остановки heartbeat ESP корректно
         # перейдёт в режим предупреждения о потере соединения с ПК.
+        self._cancel_off_timer()
         self._send("STATE:0:0")
         self.stop()
 
     def stop(self):
         self._stop.set()
+        self._cancel_off_timer()
         try:
             self._send_sock.close()
         except OSError:
@@ -65,18 +70,52 @@ class NotifierController:
 
     @property
     def battery_low(self) -> bool:
-        # Порог на устройстве также равен 3.50 В для одноклеточного Li-ion.
+        # ~19 % для Li-ion 1S при линейной шкале 3.0…4.2 В в прошивке.
         with self._lock:
-            return self._battery_mv is not None and self._battery_mv < 3500
+            return self._battery_mv is not None and self._battery_mv < 3230
 
     def set_occupied(self, occupied: bool):
-        """Передать новое состояние; сигнал посетителя проигрывается только на входе."""
+        """Передать состояние с задержкой выключения при потере детекции."""
+        with self._lock:
+            self._occupancy_generation += 1
+            generation = self._occupancy_generation
+
+        if not occupied:
+            delay = self._state.get_setting("notifier_delay_off", 10)
+            self._cancel_off_timer()
+            if delay and delay > 0:
+                timer = threading.Timer(delay, self._apply_empty, args=(generation,))
+                timer.daemon = True
+                with self._timer_lock:
+                    self._off_timer = timer
+                timer.start()
+            else:
+                self._apply_empty(generation)
+            return
+
+        self._cancel_off_timer()
         with self._lock:
             changed_to_occupied = occupied and not self._occupied
             self._occupied = occupied
         # Третий параметр — флаг звукового оповещения. Повторная синхронизация
         # при подключении ESP использует 0, поэтому не создаёт ложный сигнал.
         self._send(f"STATE:{1 if occupied else 0}:{1 if changed_to_occupied else 0}")
+
+    def _apply_empty(self, generation: int):
+        """Выключить LED людей, только если после запуска таймера не было людей."""
+        with self._lock:
+            if generation != self._occupancy_generation:
+                return
+            self._occupied = False
+        with self._timer_lock:
+            self._off_timer = None
+        self._send("STATE:0:0")
+
+    def _cancel_off_timer(self):
+        with self._timer_lock:
+            if self._off_timer is not None:
+                self._off_timer.cancel()
+                self._off_timer = None
 
     def _send(self, cmd: str):
         with self._lock:

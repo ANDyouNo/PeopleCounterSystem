@@ -6,7 +6,7 @@
  *   GPIO4  — battery via a 100 kOhm + 100 kOhm divider
  *   GPIO7  — data input of a 3-pixel WS2812/NeoPixel strip
  *
- * LED #1: battery (green / red on low charge)
+ * LED #1: battery level (colour scale; blinking below 20 %)
  * LED #2: connection with PC software (blue / blinking red on loss)
  * LED #3: people in room (green / off)
  *
@@ -24,19 +24,20 @@
 #include <esp_arduino_version.h>
 
 // ── Set your Wi-Fi credentials ────────────────────────────────
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+const char* WIFI_SSID = "Honor 8A";
+const char* WIFI_PASSWORD = "qwerty123";
 
 // ── Hardware ──────────────────────────────────────────────────
 #define BUZZER_PIN 5
 #define BATTERY_PIN 4
 #define LED_PIN 7
 #define LED_COUNT 3
-const uint8_t LED_BRIGHTNESS = 128;  // 50 % of the 0…255 NeoPixel range
+const uint8_t LED_BRIGHTNESS = 32;  // 50 % of the 0…255 NeoPixel range
 
 // 100 kOhm + 100 kOhm divider means battery voltage is twice ADC voltage.
-// LOW_BATTERY_MV is intended for a single-cell Li-ion/LiPo battery.
-const uint16_t LOW_BATTERY_MV = 3500;
+// Calibrate these two values for the actual single-cell Li-ion/LiPo battery.
+const uint16_t BATTERY_EMPTY_MV = 3000;
+const uint16_t BATTERY_FULL_MV = 4200;
 
 // ── Network ───────────────────────────────────────────────────
 const uint16_t CMD_PORT = 4214;
@@ -45,7 +46,9 @@ const char* ANNOUNCE_PREFIX = "PCOUNTER_NOTIFIER";
 const unsigned long ANNOUNCE_INTERVAL_MS = 5000;
 const unsigned long PC_TIMEOUT_MS = 5000;
 const unsigned long CONNECTION_ALERT_INTERVAL_MS = 3000;
-const unsigned long BATTERY_ALERT_INTERVAL_MS = 10UL * 60UL * 1000UL;
+const unsigned long BATTERY_LOW_ALERT_INTERVAL_MS = 10UL * 60UL * 1000UL;
+const unsigned long BATTERY_CRITICAL_ALERT_INTERVAL_MS = 60UL * 1000UL;
+const unsigned long BATTERY_BLINK_INTERVAL_MS = 550;
 
 WiFiUDP udp;
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -55,17 +58,20 @@ bool pcConnected = false;
 bool hasHeartbeat = false;
 bool lowBattery = false;
 bool connectionBlinkOn = false;
+bool batteryBlinkOn = true;
 unsigned long lastAnnounce = 0;
 unsigned long lastBatteryRead = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long lastConnectionAlert = 0;
 unsigned long lastBatteryAlert = 0;
 unsigned long lastConnectionBlink = 0;
+unsigned long lastBatteryBlink = 0;
 
 // Non-blocking buzzer pattern. 0 in a pattern means silence.
-const uint16_t VISITOR_PATTERN[] = {1900, 0, 2400, 0, 2900};
+const uint16_t VISITOR_PATTERN[] = {4100, 0, 4100, 0, 4100};
 const uint16_t LOST_CONNECTION_PATTERN[] = {700, 0, 700};
 const uint16_t LOW_BATTERY_PATTERN[] = {1200, 0, 1200, 0, 1200};
+const uint16_t STARTUP_PATTERN[] = {2200, 0, 2800, 0, 3400};
 const uint16_t BEEP_ON_MS = 145;
 const uint16_t BEEP_OFF_MS = 95;
 const uint16_t* activePattern = nullptr;
@@ -73,6 +79,7 @@ uint8_t activePatternLength = 0;
 uint8_t patternIndex = 0;
 unsigned long patternStepStarted = 0;
 uint16_t batteryMv = 0;
+uint8_t batteryPercent = 0;
 
 void setBuzzerTone(uint16_t frequency) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -82,14 +89,15 @@ void setBuzzerTone(uint16_t frequency) {
 #endif
 }
 
-void startPattern(const uint16_t* pattern, uint8_t length, bool interrupt = false) {
+bool startPattern(const uint16_t* pattern, uint8_t length, bool interrupt = false) {
   // Visitor detection must not be hidden by a concurrent service alert.
-  if (activePattern != nullptr && !interrupt) return;
+  if (activePattern != nullptr && !interrupt) return false;
   activePattern = pattern;
   activePatternLength = length;
   patternIndex = 0;
   patternStepStarted = millis();
   setBuzzerTone(activePattern[0]);
+  return true;
 }
 
 void tickBuzzer() {
@@ -119,13 +127,42 @@ uint16_t readBatteryMv() {
   return static_cast<uint16_t>((adcMvSum / 8) * 2);
 }
 
+uint8_t calculateBatteryPercent(uint16_t millivolts) {
+  if (millivolts <= BATTERY_EMPTY_MV) return 0;
+  if (millivolts >= BATTERY_FULL_MV) return 100;
+  return static_cast<uint8_t>(
+    (static_cast<uint32_t>(millivolts - BATTERY_EMPTY_MV) * 100) /
+    (BATTERY_FULL_MV - BATTERY_EMPTY_MV)
+  );
+}
+
+void refreshBattery() {
+  batteryMv = readBatteryMv();
+  batteryPercent = calculateBatteryPercent(batteryMv);
+  lowBattery = batteryPercent < 20;
+  if (!lowBattery) batteryBlinkOn = true;
+}
+
+uint32_t batteryColor() {
+  // 100–90 green, 89–75 light green, 74–50 yellow,
+  // 49–25 orange, 24–20 red-orange, 19–10 blinking red-orange,
+  // 9–0 blinking red.
+  if (batteryPercent >= 90) return pixels.Color(0, 220, 0);
+  if (batteryPercent >= 75) return pixels.Color(120, 220, 0);
+  if (batteryPercent >= 50) return pixels.Color(255, 180, 0);
+  if (batteryPercent >= 25) return pixels.Color(255, 75, 0);
+  if (batteryPercent >= 20) return pixels.Color(255, 25, 0);
+  if (!batteryBlinkOn) return 0;
+  if (batteryPercent >= 10) return pixels.Color(255, 35, 0);
+  return pixels.Color(255, 0, 0);
+}
+
 void updateLeds() {
-  const uint32_t batteryColor = lowBattery ? pixels.Color(255, 0, 0) : pixels.Color(0, 180, 0);
   const uint32_t pcColor = pcConnected
     ? pixels.Color(0, 90, 255)
     : (connectionBlinkOn ? pixels.Color(255, 0, 0) : 0);
   const uint32_t peopleColor = peoplePresent ? pixels.Color(0, 220, 0) : 0;
-  pixels.setPixelColor(0, batteryColor);
+  pixels.setPixelColor(0, batteryColor());
   pixels.setPixelColor(1, pcColor);
   pixels.setPixelColor(2, peopleColor);
   pixels.show();
@@ -180,6 +217,10 @@ void setup() {
   pixels.clear();
   pixels.show();
 
+  refreshBattery();
+  lastBatteryRead = millis();
+  startPattern(STARTUP_PATTERN, sizeof(STARTUP_PATTERN) / sizeof(STARTUP_PATTERN[0]));
+
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -187,16 +228,21 @@ void setup() {
     // Blinking red shows that Wi-Fi is not ready for a PC heartbeat yet.
     connectionBlinkOn = !connectionBlinkOn;
     updateLeds();
-    delay(350);
+    for (uint8_t i = 0; i < 35; ++i) {
+      tickBuzzer();
+      delay(10);
+    }
   }
 
   udp.begin(CMD_PORT);
-  batteryMv = readBatteryMv();
+  refreshBattery();
   lastBatteryRead = millis();
-  lowBattery = batteryMv < LOW_BATTERY_MV;
   if (lowBattery) {
-    // First warning is immediate; subsequent ones are exactly ten minutes apart.
-    lastBatteryAlert = millis() - BATTERY_ALERT_INTERVAL_MS;
+    // First warning is immediate; interval afterwards depends on severity.
+    const unsigned long interval = batteryPercent < 10
+      ? BATTERY_CRITICAL_ALERT_INTERVAL_MS
+      : BATTERY_LOW_ALERT_INTERVAL_MS;
+    lastBatteryAlert = millis() - interval;
   }
   sendAnnounce(batteryMv);
   lastAnnounce = millis();
@@ -221,8 +267,11 @@ void loop() {
   const unsigned long now = millis();
   if (now - lastBatteryRead >= ANNOUNCE_INTERVAL_MS) {
     lastBatteryRead = now;
-    batteryMv = readBatteryMv();
-    lowBattery = batteryMv < LOW_BATTERY_MV;
+    refreshBattery();
+  }
+  if (lowBattery && now - lastBatteryBlink >= BATTERY_BLINK_INTERVAL_MS) {
+    lastBatteryBlink = now;
+    batteryBlinkOn = !batteryBlinkOn;
   }
 
   if (now - lastAnnounce >= ANNOUNCE_INTERVAL_MS) {
@@ -243,10 +292,14 @@ void loop() {
     startPattern(LOST_CONNECTION_PATTERN,
                  sizeof(LOST_CONNECTION_PATTERN) / sizeof(LOST_CONNECTION_PATTERN[0]));
   }
-  if (lowBattery && now - lastBatteryAlert >= BATTERY_ALERT_INTERVAL_MS) {
-    lastBatteryAlert = now;
-    startPattern(LOW_BATTERY_PATTERN,
-                 sizeof(LOW_BATTERY_PATTERN) / sizeof(LOW_BATTERY_PATTERN[0]));
+  const unsigned long batteryAlertInterval = batteryPercent < 10
+    ? BATTERY_CRITICAL_ALERT_INTERVAL_MS
+    : BATTERY_LOW_ALERT_INTERVAL_MS;
+  if (lowBattery && now - lastBatteryAlert >= batteryAlertInterval) {
+    if (startPattern(LOW_BATTERY_PATTERN,
+                     sizeof(LOW_BATTERY_PATTERN) / sizeof(LOW_BATTERY_PATTERN[0]))) {
+      lastBatteryAlert = now;
+    }
   }
 
   updateLeds();
