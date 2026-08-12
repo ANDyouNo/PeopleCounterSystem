@@ -32,7 +32,7 @@ const char* WIFI_PASSWORD = "qwerty123";
 #define BATTERY_PIN 4
 #define LED_PIN 7
 #define LED_COUNT 3
-const uint8_t LED_BRIGHTNESS = 32;  // 50 % of the 0…255 NeoPixel range
+const uint8_t LED_BRIGHTNESS = 32;  // 0…255 NeoPixel range
 
 // 100 kOhm + 100 kOhm divider means battery voltage is twice ADC voltage.
 // Calibrate these two values for the actual single-cell Li-ion/LiPo battery.
@@ -71,7 +71,7 @@ unsigned long lastBatteryBlink = 0;
 const uint16_t VISITOR_PATTERN[] = {4100, 0, 4100, 0, 4100};
 const uint16_t LOST_CONNECTION_PATTERN[] = {700, 0, 700};
 const uint16_t LOW_BATTERY_PATTERN[] = {1200, 0, 1200, 0, 1200};
-const uint16_t STARTUP_PATTERN[] = {2200, 0, 2800, 0, 3400};
+const uint16_t STARTUP_PATTERN[] = {1047, 0, 1319, 1568, 0, 2093};
 const uint16_t BEEP_ON_MS = 145;
 const uint16_t BEEP_OFF_MS = 95;
 const uint16_t* activePattern = nullptr;
@@ -222,7 +222,7 @@ void setup() {
   startPattern(STARTUP_PATTERN, sizeof(STARTUP_PATTERN) / sizeof(STARTUP_PATTERN[0]));
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
+  WiFi.setSleep(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     // Blinking red shows that Wi-Fi is not ready for a PC heartbeat yet.
