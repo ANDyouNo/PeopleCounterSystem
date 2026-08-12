@@ -49,6 +49,8 @@ const unsigned long CONNECTION_ALERT_INTERVAL_MS = 3000;
 const unsigned long BATTERY_LOW_ALERT_INTERVAL_MS = 10UL * 60UL * 1000UL;
 const unsigned long BATTERY_CRITICAL_ALERT_INTERVAL_MS = 60UL * 1000UL;
 const unsigned long BATTERY_BLINK_INTERVAL_MS = 550;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
+const unsigned long WIFI_RETRY_PAUSE_MS = 15000;
 
 WiFiUDP udp;
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -59,6 +61,10 @@ bool hasHeartbeat = false;
 bool lowBattery = false;
 bool connectionBlinkOn = false;
 bool batteryBlinkOn = true;
+// Wi-Fi event handlers run in the Wi-Fi task. They only set these atomic
+// flags; WiFi.setSleep() itself is called later from the Arduino loop task.
+volatile bool wifiSleepChangePending = false;
+volatile bool wifiSleepDesiredState = false;
 unsigned long lastAnnounce = 0;
 unsigned long lastBatteryRead = 0;
 unsigned long lastHeartbeat = 0;
@@ -197,6 +203,69 @@ void processCommand(const String& command) {
   }
 }
 
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      Serial.println("[WiFi] Connected to access point, requesting IP...");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.printf("[WiFi] IP address: %s\n", WiFi.localIP().toString().c_str());
+      // Handshake and DHCP succeeded: enable modem sleep in loop().
+      wifiSleepDesiredState = true;
+      wifiSleepChangePending = true;
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.printf("[WiFi] Disconnected, reason: %d\n", info.wifi_sta_disconnected.reason);
+      // Keep the current power-save setting. Changing it here, or shortly
+      // afterwards, may race with the driver's automatic reconnect attempt.
+      break;
+    default:
+      break;
+  }
+}
+
+void tickConnectingUi() {
+  // Blink the PC connection LED while Wi-Fi is unavailable, without stopping
+  // the startup sound or battery indication.
+  connectionBlinkOn = !connectionBlinkOn;
+  updateLeds();
+  for (uint8_t i = 0; i < 35; ++i) {
+    tickBuzzer();
+    delay(10);
+  }
+}
+
+void connectToWiFi() {
+  uint32_t attempt = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    ++attempt;
+    Serial.printf("[WiFi] Connection attempt %lu to \"%s\"\n", attempt, WIFI_SSID);
+
+    WiFi.mode(WIFI_OFF);
+    delay(300);
+    WiFi.mode(WIFI_STA);
+
+    bool sleepOk = WiFi.setSleep(false);      // теперь драйвер уже поднят — применится реально
+    Serial.printf("[WiFi] setSleep(false) -> %s\n", sleepOk ? "ok" : "FAILED");
+
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    const unsigned long startedAt = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS) {
+      tickConnectingUi();
+    }
+
+    if (WiFi.status() == WL_CONNECTED) return;
+
+    Serial.println("[WiFi] Attempt timed out; retrying with a fresh station...");
+    const unsigned long retryStartedAt = millis();
+    while (millis() - retryStartedAt < WIFI_RETRY_PAUSE_MS) {
+      tickConnectingUi();
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(BUZZER_PIN, OUTPUT);
@@ -221,18 +290,11 @@ void setup() {
   lastBatteryRead = millis();
   startPattern(STARTUP_PATTERN, sizeof(STARTUP_PATTERN) / sizeof(STARTUP_PATTERN[0]));
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    // Blinking red shows that Wi-Fi is not ready for a PC heartbeat yet.
-    connectionBlinkOn = !connectionBlinkOn;
-    updateLeds();
-    for (uint8_t i = 0; i < 35; ++i) {
-      tickBuzzer();
-      delay(10);
-    }
-  }
+  WiFi.onEvent(onWiFiEvent);
+  connectToWiFi();
+  // Auto-reconnect is enabled only after the initial connection is complete,
+  // so it cannot race with the manual startup retry sequence above.
+  WiFi.setAutoReconnect(true);
 
   udp.begin(CMD_PORT);
   refreshBattery();
@@ -252,6 +314,15 @@ void setup() {
 }
 
 void loop() {
+  // Must run outside onWiFiEvent(): the callback belongs to the Wi-Fi task.
+  if (wifiSleepChangePending) {
+    wifiSleepChangePending = false;
+    const bool sleepOk = WiFi.setSleep(wifiSleepDesiredState);
+    Serial.printf("[WiFi] setSleep(%s) -> %s\n",
+                  wifiSleepDesiredState ? "true" : "false",
+                  sleepOk ? "ok" : "FAILED");
+  }
+
   int packetSize = udp.parsePacket();
   if (packetSize > 0) {
     char buffer[48] = {0};
