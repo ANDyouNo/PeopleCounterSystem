@@ -18,7 +18,15 @@ if TYPE_CHECKING:
 NOTIFIER_LISTEN_PORT = 4215
 NOTIFIER_COMMAND_PORT = 4214
 NOTIFIER_ANNOUNCE_PREFIX = "PCOUNTER_NOTIFIER"
+# Прошивка ждёт KA не дольше PC_TIMEOUT_MS = 9000 мс (см. visitor_notifier.ino),
+# прежде чем решит, что связь с ПК потеряна. HEARTBEAT_INTERVAL здесь даёт
+# ~9-кратный запас на случай единичных потерь пакетов из-за WIFI_PS_MIN_MODEM
+# на стороне ESP — если урежете интервал или поднимете таймаут в прошивке,
+# держите это соотношение в уме.
 HEARTBEAT_INTERVAL = 1.0
+# Порог "устройство онлайн" для остальной части бэкенда/UI — держится мягче
+# (по анонсам раз в 5 с), чем внутренний PC_TIMEOUT_MS у самой ESP: это два
+# разных индикатора и намеренно не обязаны совпадать.
 OFFLINE_AFTER = 15.0
 
 
@@ -185,6 +193,16 @@ class NotifierController:
                 next_heartbeat = now + HEARTBEAT_INTERVAL
             if is_connected != reported_connected:
                 reported_connected = is_connected
+                if not is_connected:
+                    # Забываем IP/заряд протухшего устройства: (а) не шлём
+                    # KA/STATE в пустоту, пока не придёт новый анонс, и
+                    # (б) следующее переподключение гарантированно будет
+                    # воспринято как "changed", даже если по совпадению
+                    # вернётся тот же IP и тот же уровень заряда.
+                    with self._lock:
+                        self._esp_ip = None
+                        self._battery_mv = None
+                    print("  [NOTIFIER] ESP32-C3: соединение потеряно (нет анонсов)")
                 self._state.request_state_broadcast()
 
         sock.close()
